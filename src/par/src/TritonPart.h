@@ -200,7 +200,13 @@ class TritonPart
       int num_vertices_threshold_ilp,
       int global_net_threshold);
 
- private:
+ private: 
+  void BuildDendogram();
+  std::vector<int> ClusterDendogram();
+  void BuildLogicalHierarchy();
+  void BuildSubTrees(HierNodePtr node);
+  std::vector<int> ClusterHtree(int opts=0); // cluster the htree
+  float CalculateRentParam(std::vector<int>& vertex_ids);
   // Main partititon function
   void MultiLevelPartition();
 
@@ -386,6 +392,7 @@ class TritonPart
   int hyperedge_dimensions_ = 1;  // specified in the hypergraph
   std::vector<std::vector<float>> vertex_weights_;
   std::vector<std::vector<float>> hyperedge_weights_;
+  std::vector<std::string> vertex_names_;  // the vertex name of each instances
   // When we create the hypergraph, we ignore all the hyperedges with vertices
   // more than global_net_threshold_
   HGraphPtr hypergraph_
@@ -393,6 +400,8 @@ class TritonPart
   HGraphPtr original_hypergraph_
       = nullptr;  // the original hypergraph. In the timing-driven flow,
                   // the original hypergraph also serves as the timing graph
+  HierTreePtr htree_ = nullptr;
+  HierDendoPtr dendogram_ = nullptr;
 
   // Final solution
   std::vector<int> solution_;  // store the part_id for each vertex

@@ -564,4 +564,24 @@ bool OptimalPartCplex(
 }
 #endif
 
+// Given a node in the tree, traverse the subtree and collect all leaf nodes
+std::vector<HierNodePtr> HierarchyTree::GetClusterAroundNode(HierNodePtr node)
+{
+  std::vector<HierNodePtr> cluster;
+  std::queue<HierNodePtr> node_queue;
+  node_queue.push(node);
+  while (!node_queue.empty()) {
+    HierNodePtr cur_node = node_queue.front();
+    node_queue.pop();
+    if (cur_node->IsLeaf()) {
+      cluster.push_back(cur_node);
+    } else {
+      for (auto& child : cur_node->GetChildrenNodes()) {
+        node_queue.push(child);
+      }
+    }
+  }
+  return cluster;
+}
+
 }  // namespace par

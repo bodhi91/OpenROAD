@@ -233,6 +233,16 @@ class Hypergraph
     path_timing_attr_[path_id] = value;
   }
 
+  std::string GetVertexName(const int vertex_id) const
+  {
+    return vertex_names_[vertex_id];
+  }
+
+  void SetVertexNames(const std::vector<std::string>& names)
+  {
+    vertex_names_ = names;
+  }
+
   void ResetPathTimingSlack();
 
   // Returns the vertex ids connected by the hyper edge
@@ -285,6 +295,9 @@ class Hypergraph
       int num_parts,
       float ub_factor,
       std::vector<float> base_balance) const;
+
+  std::vector<std::string> vertex_names_;  // the vertex name of each instances
+
 
  private:
   // basic hypergraph

@@ -9,6 +9,7 @@
 #include <functional>
 #include <limits>
 #include <numeric>
+#include <fstream>
 #include <queue>
 #include <random>
 #include <thread>
@@ -147,6 +148,78 @@ std::vector<int> MultilevelPartitioner::SingleLevelPartition(
 
   // Step 1: run coarsening
   CoarseGraphPtrs hierarchy = coarsener_->LazyFirstChoice(hgraph);
+
+  // define hier_maps
+  std::vector<std::vector<int>> hier_maps;
+  std::vector<std::vector<int>> cluster_attr;
+  std::vector<int> cluster_map(hgraph->GetNumVertices(), -1);
+  for (int i = 1; i < hierarchy.size(); ++i) {
+    auto hgraph = hierarchy[i];
+    std::vector<int> hier_cluster(hierarchy[i - 1]->GetNumVertices(), -1);
+    for (int c_id = 0; c_id < hierarchy[i]->GetNumVertices(); c_id++) {
+      for (const auto& v : hierarchy[i]->GetVertexCAttr(c_id)) {
+        hier_cluster[v] = c_id;
+      }
+    }
+    cluster_attr.push_back(hier_cluster);
+  }
+
+  // generate cluster maps for all coarsening levels
+
+  for (int i = 1; i <= cluster_attr.size(); ++i) {
+    std::vector<int> cluster_map(hgraph->GetNumVertices(), -1);
+    for (int j = 0; j < hgraph->GetNumVertices(); ++j) {
+      int cluster;
+      int v = j;
+      for (int k = 0; k < i; ++k) {
+        cluster = cluster_attr[k][v];
+        v = cluster;
+      }
+      cluster_map[j] = cluster;
+    }
+    hier_maps.push_back(cluster_map);
+  }
+
+  auto hier_map = hier_maps.back();
+  std::ofstream cluster_map_file;
+
+  // find max cluster id
+  int max_cluster_id = 0;
+  for (int j = 0; j < hier_map.size(); ++j) {
+    if (hier_map[j] > max_cluster_id) {
+      max_cluster_id = hier_map[j];
+    }
+  }
+
+  /*
+  // for each cluster find the vertices in it
+  // for each cluster find the vertices in it
+  std::vector<float> rent_params(max_cluster_id + 1, -1.0);
+  for (int i = 0; i <= max_cluster_id; ++i) {
+    std::vector<int> vertices_in_cluster;
+    for (int j = 0; j < hier_map.size(); ++j) {
+      if (hier_map[j] == i) {
+        vertices_in_cluster.push_back(j);
+      }
+    }
+    if (vertices_in_cluster.size() < 2) {
+      continue;
+    }
+    rent_params[i] = CalculateRentParam(hgraph, vertices_in_cluster);
+  }*/
+
+  cluster_map_file.open("cluster_map_" + std::to_string(max_cluster_id)
+                        + ".txt");
+  //cluster_map_file << "Name,Cluster_id,Rent" << std::endl;
+  cluster_map_file << "Name,Cluster_id" << std::endl;
+  for (int j = 0; j < hier_map.size(); ++j) {
+    // print each cluster as a tuple of (name , cluster_id)
+    cluster_map_file << hgraph->GetVertexName(j) << "," << hier_map[j] 
+                     //<< "," << rent_params[hier_map[j]] 
+                     << std::endl;
+  }
+
+  exit(EXIT_SUCCESS);
 
   // Step 2: run initial partitioning
   HGraphPtr coarsest_hgraph = hierarchy.back();

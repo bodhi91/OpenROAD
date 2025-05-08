@@ -368,6 +368,17 @@ void TritonPart::PartitionDesign(unsigned int num_parts_arg,
   logger_->info(PAR, 5, "Reading netlist.");
   // if the fence_flag_ is true, only consider the instances within the fence
   ReadNetlist(fixed_file, community_file, group_file);
+  BuildLogicalHierarchy();
+  logger_->report("[STATUS] Finish reading hierarchy**** ");
+  BuildDendogram();
+  // print the number of vertices in the tree
+  logger_->report("Tree vertex count = {}", htree_->GetNumVertices());
+  logger_->report("[STATUS] Clustering based on hierarchy**** ");
+  int opts = 1;
+  //std::vector<int> htree_clusters = ClusterHtree(opts);
+  std::vector<int> htree_clusters = ClusterDendogram();
+  logger_->report("[STATUS] Finished clustering**** ");
+  community_attr_ = htree_clusters;
 
   // call the multilevel partitioner to partition hypergraph_
   // but the evaluation is the original_hypergraph_
@@ -1197,6 +1208,505 @@ void TritonPart::ReadHypergraph(const std::string& hypergraph_file,
 }
 
 // for design partitioning
+// read the logical hierarchy
+// generate a logical hierarchy tree
+// and generate clusters
+void TritonPart::BuildLogicalHierarchy()
+{
+  // Get top module of the block (this is the root node of the hierarchy)
+  odb::dbModule* top_module = block_->getTopModule();
+
+  // Get all the instances in the top module
+  std::vector<odb::dbInst*> insts;
+
+  // Check if submodules exist
+  if (top_module->getChildren().empty()) {
+    // no logical hierarchy is found
+    logger_->warn(PAR, 182, "No logical hierarchy is found");
+    return;
+  } else {
+    logger_->info(PAR, 183, "Logical hierarchy is found");
+    // create hierarchy nodes for the top module
+    std::string module_name = top_module->getName();
+    odb::dbSet<odb::dbModInst> children = top_module->getChildren();
+    // convert dbSet to std::vector
+    std::vector<odb::dbModInst*> children_modules;
+    for (odb::dbModInst* child : children) {
+      children_modules.push_back(child);
+    }
+    // check if some leaf instances exist here
+    odb::dbSet<odb::dbInst> children_insts = top_module->getInsts();
+    std::vector<odb::dbInst*> children_insts_vec;
+    if (!children_insts.empty()) {
+      for (odb::dbInst* inst : children_insts) {
+        children_insts_vec.push_back(inst);
+      }
+    }
+    // create a hierarchy node for the top module
+    std::shared_ptr<HierarchyNode> top_node = std::make_shared<HierarchyNode>(
+        module_name, children_modules, children_insts_vec);
+    // First define the hierarchy tree
+    htree_ = std::make_shared<HierarchyTree>();
+    htree_->SetRoot(top_node);
+    // Build the subtree from the root
+    BuildSubTrees(top_node);
+    // visit all nodes in the tree and assign vertex ids to them
+    int tree_vtx_idx = 0;
+    std::vector<std::shared_ptr<HierarchyNode>> nodes = htree_->GetNodes();
+    for (std::shared_ptr<HierarchyNode> node : nodes) {
+      node->SetVertexId(tree_vtx_idx);
+      ++tree_vtx_idx;
+    }
+  }
+}
+
+void TritonPart::BuildSubTrees(HierNodePtr node)
+{
+  // Assert that node is not nullptr
+  assert(node != nullptr);
+  // Assert that tree is not nullptr
+  assert(htree_ != nullptr);
+  // Add the node to the tree
+  htree_->AddNode(node);
+  // Get the children modules of the current node
+  std::vector<odb::dbModInst*> children = node->GetChildrenMods();
+
+  while (true) {
+    // Check if the current node has children
+    if (children.empty()) {
+      break;
+    }
+    // Iterate over all the children
+    for (odb::dbModInst* child : children) {
+      // Get the module of the child
+      odb::dbModule* child_module = child->getMaster();
+      // Get the name of the child module
+      std::string child_module_name = child_module->getName();
+      // Get the children modules of the child module
+      odb::dbSet<odb::dbModInst> child_children = child_module->getChildren();
+      // convert dbSet to std::vector
+      std::vector<odb::dbModInst*> child_children_modules;
+      for (odb::dbModInst* child_child : child_children) {
+        child_children_modules.push_back(child_child);
+      }
+      // check if some leaf instances exist here
+      odb::dbSet<odb::dbInst> child_leaf_insts = child_module->getInsts();
+      std::vector<odb::dbInst*> child_leaf_insts_vec;
+      if (!child_leaf_insts.empty()) {
+        for (odb::dbInst* inst : child_leaf_insts) {
+          child_leaf_insts_vec.push_back(inst);
+        }
+      }
+      // create a hierarchy node for the child module
+      std::shared_ptr<HierarchyNode> child_node
+          = std::make_shared<HierarchyNode>(
+              child_module_name, child_children_modules, child_leaf_insts_vec);
+      // Add the child node to the current node
+      node->AddChild(child_node);
+      child_node->AddParent(node);
+      // Build the subtree from the child node
+      BuildSubTrees(child_node);
+    }
+    break;
+  }
+}
+
+// Build a dendrogram based on the logical hierarchy tree
+void TritonPart::BuildDendogram()
+{
+  // find how many levels are there in the hierarchy tree
+  std::vector<int> levels_of_nodes(htree_->GetNumVertices(), 0);
+  std::vector<HierNodePtr> nodes = htree_->GetNodes();
+  std::vector<float> rent_params(nodes.size(), 0.0);
+  // get root node
+  HierNodePtr node = nodes[0];
+  // set level of this node to 0
+  levels_of_nodes[node->GetVertexId()] = 0;
+
+  // define lambda function to get the subtree of a node
+  std::function<std::vector<HierNodePtr>(HierNodePtr)> GetSubTree;
+
+  GetSubTree = [&](HierNodePtr node) -> std::vector<HierNodePtr> {
+    std::vector<HierNodePtr> subtree;
+    subtree.push_back(node);
+    std::vector<HierNodePtr> children = node->GetChildrenNodes();
+    for (auto& child : children) {
+      // subtree.push_back(child);
+      std::vector<HierNodePtr> sub_subtree
+          = GetSubTree(child);  // Now this call is valid
+      subtree.insert(subtree.end(), sub_subtree.begin(), sub_subtree.end());
+    }
+    return subtree;
+  };
+
+  // define lambda to get all instances in a subtree
+  auto GetSubTreeInsts = [&](std::vector<HierNodePtr> subtree) {
+    std::vector<int> vertices_cluster;
+    for (auto& node : subtree) {
+      std::vector<odb::dbInst*> node_insts = node->GetChildrenInsts();
+      // get the corresponding vertex ids of these instances
+      for (auto& inst : node_insts) {
+        int inst_id = odb::dbIntProperty::find(inst, "vertex_id")->getValue();
+        vertices_cluster.push_back(inst_id);
+      }
+    }
+    return vertices_cluster;
+  };
+
+  for (auto& node : nodes) {
+    int node_id = node->GetVertexId();
+    if (node_id == 0) {
+      continue;
+    }
+    HierNodePtr parent = node->GetParent();
+    int level_parent = levels_of_nodes[parent->GetVertexId()];
+    levels_of_nodes[node->GetVertexId()] = level_parent + 1;
+    // calculate the rent parameter of this cluster
+    std::vector<HierNodePtr> subtree = GetSubTree(node);
+    std::vector<int> vertices_cluster = GetSubTreeInsts(subtree);
+    rent_params[node_id] = CalculateRentParam(vertices_cluster);
+  }
+  int max_level
+      = *std::max_element(levels_of_nodes.begin(), levels_of_nodes.end());
+  logger_->report("Max level = {}", max_level);
+  // build a dendogram with max_level + 1 levels
+  dendogram_ = std::make_shared<HierDendogram>(max_level);
+
+  // traverse the hierarchy tree and build the dendogram datastructure based on
+  // it
+  std::vector<HierDendoNodePtr> dendogram_nodes;
+  nodes = htree_->GetNodes();
+  for (auto& node : nodes) {
+    int level = levels_of_nodes[node->GetVertexId()];
+    // get the instances in this node
+    std::vector<odb::dbInst*> instances = node->GetChildrenInsts();
+    // get the corresponding vertex ids of these instances
+    std::vector<int> inst_ids;
+    for (auto& inst : instances) {
+      int inst_id = odb::dbIntProperty::find(inst, "vertex_id")->getValue();
+      inst_ids.push_back(inst_id);
+    }
+    float rent_param = rent_params[node->GetVertexId()];
+    // create a dendo node
+    HierDendoNodePtr dendo_node = std::make_shared<HierDendogramNode>(
+        inst_ids, rent_param, level, node->GetVertexId());
+    dendogram_nodes.emplace_back(dendo_node);
+  }
+
+  int max_dendo_node_id = dendogram_nodes.size();
+
+  // update children related information first
+  for (auto& node : nodes) {
+    // corresponding dendogram node
+    int node_id = node->GetVertexId();
+    // get the children of this node
+    std::vector<HierNodePtr> children = node->GetChildrenNodes();
+    // check if node has no children --> this is a leaf node
+    if (children.size() == 0) {
+      // find the level of this node
+      int level = levels_of_nodes[node_id];
+      if (level < max_level) {
+        // replicate this node to be its child
+        // create a dendo node and replicate this for max_level - level times
+        for (int i = level; i < max_level; i++) {
+          HierDendoNodePtr dendo_node = std::make_shared<HierDendogramNode>(
+              dendogram_nodes[node_id]->GetVertexIds(),
+              dendogram_nodes[node_id]->GetRentParam(),
+              i + 1,
+              max_dendo_node_id);
+          dendogram_nodes.push_back(dendo_node);
+          dendogram_nodes[node_id]->AddChild(dendo_node);
+          node_id = max_dendo_node_id++;
+        }
+      }
+    } else {
+      // get the corresponding dendogram nodes of these children
+      std::vector<HierDendoNodePtr> children_dendo_nodes;
+      for (auto& child : children) {
+        int child_id = child->GetVertexId();
+        if (child_id == -1) {
+          continue;
+        }
+        children_dendo_nodes.push_back(dendogram_nodes[child_id]);
+      }
+      for (auto& child : children_dendo_nodes) {
+        dendogram_nodes[node_id]->AddChild(child);
+      }
+    }
+  }
+
+  // now update vertex ids for each dendo node
+  // for example a parent node has 2 child node
+  // child node 1 has vertex ids 1, 2, 3
+  // child node 2 has vertex ids 4, 5, 6
+  // then the parent node has vertex ids 1, 2, 3, 4, 5, 6
+  // leaf nodes are already updated
+
+  // print the level of all leaf nodes
+  for (auto& node : dendogram_nodes) {
+    if (node->GetNodeId() >= htree_->GetNumVertices()) {
+      // calculate the rent parameter of this cluster
+      std::vector<int> vertices_cluster = node->GetVertexIds();
+      rent_params.push_back(CalculateRentParam(vertices_cluster));
+    }
+  }
+
+  // traverse the dendogram from bottom to top
+  for (int i = max_level - 1; i >= 0; i--) {
+    // get all the nodes at level i
+    std::vector<HierDendoNodePtr> nodes_at_level_i;
+    for (auto& node : dendogram_nodes) {
+      if (node->GetLevel() == i) {
+        nodes_at_level_i.push_back(node);
+      }
+    }
+    // update the vertex ids of these nodes
+    for (auto& node : nodes_at_level_i) {
+      // get the children of this node
+      std::vector<HierDendoNodePtr> children = node->GetChildren();
+      // get the vertex ids of these children
+      std::vector<int> vertex_ids;
+      for (auto& child : children) {
+        std::vector<int> child_vertex_ids = child->GetVertexIds();
+        vertex_ids.insert(
+            vertex_ids.end(), child_vertex_ids.begin(), child_vertex_ids.end());
+      }
+      node->SetVertexIds(vertex_ids);
+    }
+  }
+
+  dendogram_->SetNodes(dendogram_nodes);
+  dendogram_->SetRoot(dendogram_nodes[0]);
+  // set all rent parameters
+  for (auto& node : dendogram_nodes) {
+    dendogram_->SetNodeRentParam(node->GetNodeId(),
+                                 rent_params[node->GetNodeId()]);
+  }
+}
+
+std::vector<int> TritonPart::ClusterDendogram()
+{
+  int levels = dendogram_->GetMaxLevels();
+  // try cluster from level 1 since level 0 is the entire netlist
+  int min_lvl;
+  float min_wt_avg_rent_param = std::numeric_limits<float>::max();
+  std::vector<float> cluster_rent_param;
+  for (int i = 1; i <= levels; ++i) {
+    float wt_avg_rent_param = dendogram_->GetAvgRentAtLevel(i);
+    cluster_rent_param.push_back(wt_avg_rent_param);
+    if (wt_avg_rent_param < min_wt_avg_rent_param) {
+      min_lvl = i;
+      min_wt_avg_rent_param = wt_avg_rent_param;
+    }
+  }
+
+  logger_->report("Clustering the hierarchy at level {} with rent parameter {}",
+                  min_lvl,
+                  min_wt_avg_rent_param);
+  // get all nodes at level min_lvl
+  std::vector<HierDendoNodePtr> nodes_at_min_lvl
+      = dendogram_->GetNodesAtLevel(min_lvl);
+  // assign vertices in each node to be in the same cluster
+  std::vector<int> cluster_labels(original_hypergraph_->GetNumVertices(), -1);
+  int cluster_id = 0;
+  for (auto& node : nodes_at_min_lvl) {
+    std::vector<int> vertex_ids = node->GetVertexIds();
+    for (auto& vertex_id : vertex_ids) {
+      cluster_labels[vertex_id] = cluster_id;
+    }
+    cluster_id++;
+  }
+
+  return cluster_labels;
+}
+
+// Cluster the htree_ to obtain clusters from the logical hierarchy
+std::vector<int> TritonPart::ClusterHtree(int opts)
+{
+  // assert that htree_ is not nullptr
+  assert(htree_ != nullptr);
+  std::vector<int> cluster_labels(original_hypergraph_->GetNumVertices(), -1);
+  // by default all the vertices are assigned to cluster -1
+  // Loop through the nodes in the htree and assign all standard cell
+  // instances to its parent node
+  std::vector<HierNodePtr> nodes = htree_->GetNodes();
+  std::vector<float> rents_param(nodes.size(), 0.0);
+  for (auto& node : nodes) {
+    // Check if node has leaf instances
+    std::vector<odb::dbInst*> leaf_instances = node->GetChildrenInsts();
+    // get id of this node
+    int node_id = node->GetVertexId();
+    std::vector<int> vertices_cluster;
+    if (leaf_instances.size() > 0) {
+      for (auto& inst : leaf_instances) {
+        // find the vertex id of the instance
+        int vertex_id = odb::dbIntProperty::find(inst, "vertex_id")->getValue();
+        assert(cluster_labels[vertex_id] == -1);
+        cluster_labels[vertex_id] = node_id;
+        vertices_cluster.push_back(vertex_id);
+      }
+      // calculate the rent parameter of this cluster
+      rents_param[node_id] = CalculateRentParam(vertices_cluster);
+    }
+  }
+
+  // find average rent parameter of all leaf nodes
+  float avg_rent_param = 0.0;
+  float stdev_rent = 0.0;
+  int freq = 0;
+  for (auto& node : nodes) {
+    if (node->GetChildrenInsts().size() > 0) {
+      avg_rent_param += rents_param[node->GetVertexId()];
+      freq++;
+      stdev_rent += rents_param[node->GetVertexId()]
+                    * rents_param[node->GetVertexId()];
+    }
+  }
+
+  avg_rent_param = avg_rent_param / freq;
+  stdev_rent = std::sqrt(stdev_rent / freq - avg_rent_param * avg_rent_param);
+
+  logger_->info(PAR, 185, "Average rent parameter = {}", avg_rent_param);
+  logger_->info(
+      PAR, 186, "Standard deviation of rent parameter = {}", stdev_rent);
+
+  // Loop through all clusters and try to refine clusters with poor rent
+  // parameter
+  std::set<int> unique_clusters
+      = std::set<int>(cluster_labels.begin(), cluster_labels.end());
+  std::vector<HierNodePtr> nodes_to_cluster;
+  for (auto& cluster_label : unique_clusters) {
+    if (cluster_label == -1) {
+      continue;
+    }
+    // get the node from the htree
+    HierNodePtr node = htree_->GetNode(cluster_label);
+    // check the rent's parameter of the cluster
+    float rent_param = rents_param[cluster_label];
+    if (rent_param > (avg_rent_param + 1.5 * stdev_rent)) {
+      // get the standard cell instances in this cluster
+      std::vector<odb::dbInst*> leaf_instances = node->GetChildrenInsts();
+      std::vector<int> vertices_cluster;
+      for (auto& inst : leaf_instances) {
+        // find the vertex id of the instance
+        int vertex_id = odb::dbIntProperty::find(inst, "vertex_id")->getValue();
+        vertices_cluster.push_back(vertex_id);
+      }
+      int best_cluster = -1;
+      while (true) {
+        if (node->GetVertexId() == 0) {
+          break;
+        }
+        // get the parent of this node
+        HierNodePtr parent = node->GetParent();
+        // check if the parent is the root node
+        if (parent->GetChildrenInsts().size() == 0) {
+          node = parent;
+          continue;
+        } else {
+          std::vector<odb::dbInst*> parent_instances
+              = parent->GetChildrenInsts();
+          for (auto& inst : parent_instances) {
+            // find the vertex id of the instance
+            int vertex_id
+                = odb::dbIntProperty::find(inst, "vertex_id")->getValue();
+            vertices_cluster.push_back(vertex_id);
+          }
+          // calculate the rent parameter of this cluster
+          float new_rent_param = CalculateRentParam(vertices_cluster);
+          if (new_rent_param <= rent_param) {
+            best_cluster = parent->GetVertexId();
+            break;
+          } else {
+            node = parent;
+          }
+        }
+      }
+      if (best_cluster > -1) {
+        // assign all instances in vertices_cluster to parent cluster
+        for (auto& vertex : vertices_cluster) {
+          if (cluster_labels[vertex] != best_cluster) {
+            cluster_labels[vertex] = best_cluster;
+          }
+          // collect all intances in child cluster
+          std::vector<odb::dbInst*> child_instances = node->GetChildrenInsts();
+          // add these as children to parent cluster
+          for (auto& inst : child_instances) {
+            HierNodePtr parent = htree_->GetNode(best_cluster);
+            parent->AddChildrenInst(inst);
+          }
+          // remove these from child cluster
+          node->RemoveChildrenInsts();
+        }
+      }
+    }
+  }
+
+  // find the max cluster id
+  int max_cluster_id
+      = *std::max_element(cluster_labels.begin(), cluster_labels.end());
+
+  // Assign each macro to be an individual cluster
+  // Forcefully separate out the macros so that nothing clusters with them
+  for (int i = 0; i < cluster_labels.size(); i++) {
+    if (vertex_types_[i] == MACRO) {
+      cluster_labels[i] = ++max_cluster_id;
+    }
+  }
+
+  // Make the cluster labels continuous
+  std::vector<int> cluster_labels_new(cluster_labels.size(), -1);
+  int cluster_id = 0;
+  for (auto& cluster_label : cluster_labels) {
+    if (cluster_label == -1) {
+      cluster_labels_new[cluster_id] = cluster_id;
+    } else {
+      cluster_labels_new[cluster_id] = cluster_label;
+    }
+    cluster_id++;
+  }
+
+  return cluster_labels_new;
+}
+
+float TritonPart::CalculateRentParam(std::vector<int>& vertex_ids)
+{
+  std::vector<int> labels(original_hypergraph_->GetNumVertices(), -1);
+  for (int i = 0; i < vertex_ids.size(); i++) {
+    labels[vertex_ids[i]] = 1;
+  }
+  // Find all hyperedges connected to vertices in the cluster
+  std::set<int> hyperedges;
+  for (auto& vertex : vertex_ids) {
+    auto he = original_hypergraph_->Edges(vertex);
+    hyperedges.insert(he.begin(), he.end());
+  }
+
+  // Find total outgoing hyperedges in the cluster
+  int total_outgoing_hyperedges = 0;
+  for (auto& hyperedge : hyperedges) {
+    // Find all vertices in the hyperedge
+    auto vertices_in_hyperedge = original_hypergraph_->Vertices(hyperedge);
+    // Find all vertices in the hyperedge that connect to other clusters
+    for (auto& vertex : vertices_in_hyperedge) {
+      if (labels[vertex] == -1) {
+        total_outgoing_hyperedges++;
+        break;
+      }
+    }
+  }
+
+  float numerator = std::log(static_cast<float>(total_outgoing_hyperedges)
+                             / static_cast<float>(hyperedges.size()));
+  float denominator = std::log(static_cast<float>(vertex_ids.size()));
+  if (denominator == 0) {
+    return 1.0;
+  } else {  // Return the rent parameter
+    return 1.0 + (numerator / denominator);
+  }
+}
+
+// for design partitioning
 // Convert the netlist into hypergraphs
 // read fixed_file, community_file and group_file
 // read placement information
@@ -1229,6 +1739,7 @@ void TritonPart::ReadNetlist(const std::string& fixed_file,
                                 0.0);  // IO port has no area
         vertex_weights_.emplace_back(vwts);
         vertex_types_.emplace_back(PORT);
+        vertex_names_.emplace_back(term->getName());
         odb::dbIntProperty::find(term, "vertex_id")->setValue(vertex_id++);
         if (placement_flag_ == true) {
           std::vector<float> loc{(box.xMin() + box.xMax()) / 2.0f,
@@ -1264,6 +1775,7 @@ void TritonPart::ReadNetlist(const std::string& fixed_file,
         } else {
           vertex_types_.emplace_back(COMB_STD_CELL);
         }
+        vertex_names_.emplace_back(inst->getName());
         if (placement_flag_ == true) {
           std::vector<float> loc{(box->xMin() + box->xMax()) / 2.0f,
                                  (box->yMin() + box->yMax()) / 2.0f};
@@ -1278,6 +1790,7 @@ void TritonPart::ReadNetlist(const std::string& fixed_file,
       vertex_types_.emplace_back(PORT);
       std::vector<float> vwts(vertex_dimensions_, 0.0);
       vertex_weights_.push_back(vwts);
+      vertex_names_.emplace_back(term->getName());
       if (placement_flag_ == true) {
         odb::Rect box = term->getBBox();
         std::vector<float> loc{(box.xMin() + box.xMax()) / 2.0f,
@@ -1308,6 +1821,7 @@ void TritonPart::ReadNetlist(const std::string& fixed_file,
       } else {
         vertex_types_.emplace_back(COMB_STD_CELL);
       }
+      vertex_names_.emplace_back(inst->getName());
       odb::dbIntProperty::find(inst, "vertex_id")->setValue(vertex_id++);
       if (placement_flag_ == true) {
         odb::dbBox* box = inst->getBBox();
@@ -1499,14 +2013,44 @@ void TritonPart::ReadNetlist(const std::string& fixed_file,
                                                       hyperedges_arc_set,
                                                       timing_paths_,
                                                       logger_);
-
+  original_hypergraph_->SetVertexNames(vertex_names_);
   logger_->info(
       PAR,
       18,
       "Read netlist has {} vertices, {} hyperedges and {} timing paths.",
-      original_hypergraph_->GetNumVertices(),
-      original_hypergraph_->GetNumHyperedges(),
-      timing_paths_.size());
+  original_hypergraph_->GetNumVertices(),
+  original_hypergraph_->GetNumHyperedges(),
+  timing_paths_.size());
+
+  std::string design_name = block_->getName();
+  // write a file out for mapping of names to vertex ids
+  std::ofstream file_output(design_name + ".names");
+  if (!file_output.is_open()) {
+    logger_->warn(PAR, 184, "Cannot open the vertex names file");
+  } else {
+    file_output << "Name,VertexId\n";
+    int vertex_id = 0;
+    for (auto& name : vertex_names_) {
+      file_output << name << "," << vertex_id++ << "\n";
+    }
+  }
+
+  // write out a hypergraph file 
+  // first line is number of hyperedges and number of vertices
+  // line i+1 is the list of vertices in hyperedge i
+
+  std::ofstream file_output2(design_name + ".hgr");
+  if (!file_output2.is_open()) {
+    logger_->warn(PAR, 187, "Cannot open the hypergraph file");
+  } else {
+    file_output2 << num_hyperedges_ << " " << num_vertices_ << "\n";
+    for (auto& hyperedge : hyperedges_) {
+      for (auto& vertex : hyperedge) {
+        file_output2 << vertex << " ";
+      }
+      file_output2 << "\n";
+    }
+  }
 }
 
 // Find all the critical timing paths
