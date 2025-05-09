@@ -148,9 +148,10 @@ std::vector<int> MultilevelPartitioner::SingleLevelPartition(
 
   // Step 1: run coarsening
   CoarseGraphPtrs hierarchy = coarsener_->LazyFirstChoice(hgraph);
-
+  std::cout << "This design does not have any hierarchy" << std::endl; 
   // define hier_maps
   std::vector<std::vector<int>> hier_maps;
+  std::cout << "Vertex Size: " << hgraph->GetVertexNameSize() << " Hier Map Size: " << hier_maps.size() << std::endl; 
   std::vector<std::vector<int>> cluster_attr;
   std::vector<int> cluster_map(hgraph->GetNumVertices(), -1);
   for (int i = 1; i < hierarchy.size(); ++i) {
@@ -163,6 +164,7 @@ std::vector<int> MultilevelPartitioner::SingleLevelPartition(
     }
     cluster_attr.push_back(hier_cluster);
   }
+  std::cout << "This design does not have any hierarchy 1" << std::endl; 
 
   // generate cluster maps for all coarsening levels
 
@@ -179,10 +181,11 @@ std::vector<int> MultilevelPartitioner::SingleLevelPartition(
     }
     hier_maps.push_back(cluster_map);
   }
+  std::cout << "This design does not have any hierarchy 2" << std::endl; 
 
   auto hier_map = hier_maps.back();
   std::ofstream cluster_map_file;
-
+  std::cout << "Size of hierarchy map: " << hier_map.size() << std::endl;
   // find max cluster id
   int max_cluster_id = 0;
   for (int j = 0; j < hier_map.size(); ++j) {
@@ -190,6 +193,8 @@ std::vector<int> MultilevelPartitioner::SingleLevelPartition(
       max_cluster_id = hier_map[j];
     }
   }
+
+  std::cout << "Number of clusters in the design: " << max_cluster_id << std::endl;
 
   /*
   // for each cluster find the vertices in it
@@ -212,6 +217,7 @@ std::vector<int> MultilevelPartitioner::SingleLevelPartition(
                         + ".txt");
   //cluster_map_file << "Name,Cluster_id,Rent" << std::endl;
   cluster_map_file << "Name,Cluster_id" << std::endl;
+  std::cout << "Vertex Size: " << hgraph->GetVertexNameSize() << " Hier Map Size: " << hier_map.size() << std::endl; 
   for (int j = 0; j < hier_map.size(); ++j) {
     // print each cluster as a tuple of (name , cluster_id)
     cluster_map_file << hgraph->GetVertexName(j) << "," << hier_map[j] 

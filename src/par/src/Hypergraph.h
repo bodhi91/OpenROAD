@@ -237,6 +237,11 @@ class Hypergraph
   {
     return vertex_names_[vertex_id];
   }
+  
+  int GetVertexNameSize() const
+  {
+    return vertex_names_.size();
+  }
 
   void SetVertexNames(const std::vector<std::string>& names)
   {

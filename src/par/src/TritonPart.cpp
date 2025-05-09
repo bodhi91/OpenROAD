@@ -370,7 +370,7 @@ void TritonPart::PartitionDesign(unsigned int num_parts_arg,
   ReadNetlist(fixed_file, community_file, group_file);
   odb::dbModule* top_module = block_->getTopModule();
   // Check if submodules exist
-  if (top_module->getChildren().empty()) {
+  if (!top_module->getChildren().empty()) {
     BuildLogicalHierarchy();
     logger_->report("[STATUS] Finish reading hierarchy**** ");
     BuildDendogram();
@@ -2017,6 +2017,7 @@ void TritonPart::ReadNetlist(const std::string& fixed_file,
                                                       hyperedges_arc_set,
                                                       timing_paths_,
                                                       logger_);
+  std::cout << "Size of Vertex Names: " << vertex_names_.size() << std::endl;
   original_hypergraph_->SetVertexNames(vertex_names_);
   logger_->info(
       PAR,
@@ -2521,6 +2522,7 @@ void TritonPart::MultiLevelPartition()
   tritonpart_coarsener->SetThrCoarsenHyperedgeSizeSkip(global_net_threshold_);
   hypergraph_
       = tritonpart_coarsener->GroupVertices(original_hypergraph_, group_attr_);
+  hypergraph_->SetVertexNames(vertex_names_);
   tritonpart_coarsener->SetThrCoarsenHyperedgeSizeSkip(
       thr_coarsen_hyperedge_size_skip_);
 
