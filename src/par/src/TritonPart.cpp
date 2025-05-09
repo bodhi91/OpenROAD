@@ -368,17 +368,21 @@ void TritonPart::PartitionDesign(unsigned int num_parts_arg,
   logger_->info(PAR, 5, "Reading netlist.");
   // if the fence_flag_ is true, only consider the instances within the fence
   ReadNetlist(fixed_file, community_file, group_file);
-  BuildLogicalHierarchy();
-  logger_->report("[STATUS] Finish reading hierarchy**** ");
-  BuildDendogram();
-  // print the number of vertices in the tree
-  logger_->report("Tree vertex count = {}", htree_->GetNumVertices());
-  logger_->report("[STATUS] Clustering based on hierarchy**** ");
-  int opts = 1;
-  //std::vector<int> htree_clusters = ClusterHtree(opts);
-  std::vector<int> htree_clusters = ClusterDendogram();
-  logger_->report("[STATUS] Finished clustering**** ");
-  community_attr_ = htree_clusters;
+  odb::dbModule* top_module = block_->getTopModule();
+  // Check if submodules exist
+  if (top_module->getChildren().empty()) {
+    BuildLogicalHierarchy();
+    logger_->report("[STATUS] Finish reading hierarchy**** ");
+    BuildDendogram();
+    // print the number of vertices in the tree
+    logger_->report("Tree vertex count = {}", htree_->GetNumVertices());
+    logger_->report("[STATUS] Clustering based on hierarchy**** ");
+    int opts = 1;
+    //std::vector<int> htree_clusters = ClusterHtree(opts);
+    std::vector<int> htree_clusters = ClusterDendogram();
+    logger_->report("[STATUS] Finished clustering**** ");
+    community_attr_ = htree_clusters;
+  }
 
   // call the multilevel partitioner to partition hypergraph_
   // but the evaluation is the original_hypergraph_
